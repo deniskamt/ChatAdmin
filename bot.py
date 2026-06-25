@@ -34,9 +34,26 @@ COMMENT_TEXT = os.environ.get(
     '📜 Перед общением ознакомьтесь с <a href="{rules_url}">правилами чата</a>.',
 )
 
-# Необязательное ограничение на один канал.
+# Username бота (для справки и проверки при запуске), напр. "my_rules_bot".
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "").strip().lstrip("@")
+
+# Необязательное ограничение на один канал — по числовому id и/или @username.
 _channel_id_raw = os.environ.get("CHANNEL_ID", "").strip()
 CHANNEL_ID = int(_channel_id_raw) if _channel_id_raw else None
+CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "").strip().lstrip("@").lower()
+
+
+def _is_target_channel(origin_chat) -> bool:
+    """True, если пост пришёл из нужного канала (или фильтр не задан)."""
+    if CHANNEL_ID is None and not CHANNEL_USERNAME:
+        return True
+    if origin_chat is None:
+        return False
+    if CHANNEL_ID is not None and origin_chat.id == CHANNEL_ID:
+        return True
+    if CHANNEL_USERNAME and (origin_chat.username or "").lower() == CHANNEL_USERNAME:
+        return True
+    return False
 
 
 async def post_rules_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -51,8 +68,7 @@ async def post_rules_comment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     # При необходимости фильтруем по конкретному каналу-источнику.
-    origin_chat = message.sender_chat
-    if CHANNEL_ID is not None and (origin_chat is None or origin_chat.id != CHANNEL_ID):
+    if not _is_target_channel(message.sender_chat):
         return
 
     text = COMMENT_TEXT.format(rules_url=RULES_URL)
@@ -79,6 +95,26 @@ def main() -> None:
         logger.warning("RULES_URL пуст — комментарий будет со ссылкой-заглушкой.")
 
     application = Application.builder().token(BOT_TOKEN).build()
+
+    # Сверяем фактический username бота с заданным в настройках.
+    async def _check_identity(app: Application) -> None:
+        me = await app.bot.get_me()
+        logger.info("Бот @%s (id=%s) авторизован.", me.username, me.id)
+        if BOT_USERNAME and me.username.lower() != BOT_USERNAME.lower():
+            logger.warning(
+                "BOT_USERNAME=%s не совпадает с реальным @%s — проверьте токен.",
+                BOT_USERNAME,
+                me.username,
+            )
+
+    application.post_init = _check_identity
+
+    if CHANNEL_USERNAME or CHANNEL_ID is not None:
+        logger.info(
+            "Фильтр канала: id=%s username=%s",
+            CHANNEL_ID,
+            f"@{CHANNEL_USERNAME}" if CHANNEL_USERNAME else None,
+        )
 
     # Ловим автопересылки постов в привязанной группе обсуждения.
     application.add_handler(
