@@ -176,7 +176,10 @@ def main() -> None:
     application.add_error_handler(on_error)
 
     logger.info("Бот запущен. Ожидаю новые посты канала…")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+    )
 
 
 if __name__ == "__main__":
