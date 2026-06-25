@@ -13,18 +13,24 @@
 
 import logging
 import os
+import sys
 
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
+from telegram.error import Conflict
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
 load_dotenv()
 
+# Пишем логи в stdout (Railway красит stderr в красный, даже обычные INFO).
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
+    stream=sys.stdout,
 )
+# Приглушаем шумный лог опроса getUpdates.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("rules-bot")
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
@@ -120,6 +126,18 @@ async def post_rules_comment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.exception("Не удалось отправить комментарий с правилами")
 
 
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Гасит ожидаемые сетевые сбои без громоздкого трейсбека."""
+    error = context.error
+    if isinstance(error, Conflict):
+        logger.warning(
+            "Conflict: запущен ещё один экземпляр бота с этим токеном. "
+            "Оставьте только один."
+        )
+        return
+    logger.error("Ошибка при обработке обновления: %s", error)
+
+
 def main() -> None:
     if not BOT_TOKEN:
         raise SystemExit("Не задан BOT_TOKEN. Скопируйте .env.example в .env и заполните.")
@@ -155,6 +173,7 @@ def main() -> None:
     application.add_handler(
         MessageHandler(filters.IS_AUTOMATIC_FORWARD, post_rules_comment)
     )
+    application.add_error_handler(on_error)
 
     logger.info("Бот запущен. Ожидаю новые посты канала…")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
