@@ -55,9 +55,9 @@ BUTTON_TEXT = os.environ.get("BUTTON_TEXT", "📜 Правила чата")
 # Username бота (для справки и проверки при запуске), напр. "my_rules_bot".
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "").strip().lstrip("@")
 
-# Диагностика: логировать каждое входящее обновление. По умолчанию включено,
-# чтобы было видно, доходят ли сообщения из группы. Отключить: DEBUG=0.
-DEBUG = os.environ.get("DEBUG", "1").strip().lower() not in ("0", "false", "no", "")
+# Диагностика: логировать каждое входящее обновление. По умолчанию выключено;
+# включить для отладки можно переменной DEBUG=1.
+DEBUG = os.environ.get("DEBUG", "0").strip().lower() not in ("0", "false", "no", "")
 
 def _normalize_username(raw: str) -> str:
     """Приводит '@name', 'https://t.me/name', 't.me/name' к 'name' (в нижнем регистре)."""
