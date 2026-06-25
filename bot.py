@@ -246,6 +246,13 @@ def main() -> None:
                     "❗ Бот НЕ состоит в группе обсуждения %s — добавьте его туда.",
                     group_id,
                 )
+            elif member.status != "administrator":
+                logger.warning(
+                    "❗ Статус бота '%s' — НЕ администратор. При включённом Privacy "
+                    "Mode бот не получит автопересылки постов. Сделайте бота "
+                    "администратором группы обсуждения %s.",
+                    member.status, group_id,
+                )
         except Exception as exc:  # noqa: BLE001 — диагностика, не должна ронять бота
             logger.warning("Не удалось проверить группу обсуждения: %s", exc)
 
