@@ -19,7 +19,13 @@ from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import Conflict
-from telegram.ext import Application, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    ContextTypes,
+    MessageHandler,
+    TypeHandler,
+    filters,
+)
 
 load_dotenv()
 
@@ -44,6 +50,10 @@ BUTTON_TEXT = os.environ.get("BUTTON_TEXT", "📜 Правила чата")
 
 # Username бота (для справки и проверки при запуске), напр. "my_rules_bot".
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "").strip().lstrip("@")
+
+# Диагностика: логировать каждое входящее обновление. По умолчанию включено,
+# чтобы было видно, доходят ли сообщения из группы. Отключить: DEBUG=0.
+DEBUG = os.environ.get("DEBUG", "1").strip().lower() not in ("0", "false", "no", "")
 
 def _normalize_username(raw: str) -> str:
     """Приводит '@name', 'https://t.me/name', 't.me/name' к 'name' (в нижнем регистре)."""
@@ -75,6 +85,31 @@ def _is_target_channel(origin_chat) -> bool:
     if CHANNEL_USERNAME and (origin_chat.username or "").lower() == CHANNEL_USERNAME:
         return True
     return False
+
+
+async def debug_log_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Логирует каждое входящее обновление — чтобы видеть, что вообще доходит до бота."""
+    msg = update.effective_message
+    chat = update.effective_chat
+    if msg is not None:
+        logger.info(
+            "UPDATE id=%s | тип=%s | чат=%s (%s, id=%s) | auto_forward=%s | "
+            "sender_chat=%s | текст=%r",
+            update.update_id,
+            "edited" if update.edited_message else "message",
+            getattr(chat, "title", None),
+            getattr(chat, "type", None),
+            getattr(chat, "id", None),
+            msg.is_automatic_forward,
+            getattr(msg.sender_chat, "id", None),
+            (msg.text or msg.caption or "")[:40],
+        )
+    else:
+        logger.info(
+            "UPDATE id=%s | без message | content=%s",
+            update.update_id,
+            update.to_dict(),
+        )
 
 
 async def post_rules_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -168,6 +203,12 @@ def main() -> None:
             CHANNEL_ID,
             f"@{CHANNEL_USERNAME}" if CHANNEL_USERNAME else None,
         )
+
+    # Диагностика: логируем все входящие обновления (в отдельной группе -1,
+    # чтобы это не мешало основному обработчику).
+    if DEBUG:
+        application.add_handler(TypeHandler(Update, debug_log_update), group=-1)
+        logger.info("DEBUG включён: логирую все входящие обновления.")
 
     # Ловим автопересылки постов в привязанной группе обсуждения.
     application.add_handler(
