@@ -67,24 +67,25 @@ CONTENT = [
 
 
 def main() -> None:
-    account = call("createAccount", {
-        "short_name": "ChatAdmin",
-        "author_name": "Аукцион",
-    })
-    token = account["access_token"]
+    url, token = publish_rules()
+    print("\n✅ Страница правил создана!")
+    print("RULES_URL =", url)
+    print("\nВставьте этот URL в переменную RULES_URL (в .env или на Railway).")
+    print("Токен для будущего редактирования (сохраните, если нужно):", token)
 
+
+def publish_rules(title: str = "Правила чата", author: str = "Аукцион") -> tuple[str, str]:
+    """Создаёт страницу правил в Telegraph. Возвращает (url, access_token)."""
+    account = call("createAccount", {"short_name": "ChatAdmin", "author_name": author})
+    token = account["access_token"]
     page = call("createPage", {
         "access_token": token,
-        "title": "Правила чата",
-        "author_name": "Аукцион",
+        "title": title,
+        "author_name": author,
         "content": json.dumps(CONTENT, ensure_ascii=False),
         "return_content": "false",
     })
-
-    print("\n✅ Страница правил создана!")
-    print("RULES_URL =", page["url"])
-    print("\nВставьте этот URL в переменную RULES_URL (в .env или на Railway).")
-    print("Токен для будущего редактирования (сохраните, если нужно):", token)
+    return page["url"], token
 
 
 if __name__ == "__main__":

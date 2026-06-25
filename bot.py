@@ -43,7 +43,10 @@ logger = logging.getLogger("rules-bot")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 
 # Ссылка на правила в Telegraph (см. create_telegraph.py) — открывается по кнопке.
+# Заглушку из .env.example считаем «не заданной» и создаём страницу автоматически.
 RULES_URL = os.environ.get("RULES_URL", "").strip()
+if RULES_URL.rstrip("/").endswith("Pravila-chata-01-01"):
+    RULES_URL = ""
 
 # Текст сообщения над кнопкой и подпись самой кнопки.
 COMMENT_TEXT = os.environ.get("COMMENT_TEXT", "👇 Правила нашего чата:")
@@ -190,13 +193,29 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def main() -> None:
+    global RULES_URL
+
     if not BOT_TOKEN:
         raise SystemExit("Не задан BOT_TOKEN. Скопируйте .env.example в .env и заполните.")
+
+    # Если ссылка на правила не задана — создаём страницу в Telegraph автоматически.
     if not RULES_URL:
-        raise SystemExit(
-            "Не задан RULES_URL. Создайте страницу правил: python create_telegraph.py "
-            "и вставьте полученную ссылку в RULES_URL."
-        )
+        logger.info("RULES_URL не задан — создаю страницу правил в Telegraph…")
+        try:
+            from create_telegraph import publish_rules
+
+            RULES_URL, _token = publish_rules()
+            logger.info("✅ Страница правил создана: %s", RULES_URL)
+            logger.warning(
+                "Чтобы не создавать страницу заново при каждом перезапуске, "
+                "сохраните этот URL в переменную RULES_URL: %s",
+                RULES_URL,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise SystemExit(
+                f"Не удалось создать страницу правил в Telegraph: {exc}. "
+                "Создайте её вручную (python create_telegraph.py) и задайте RULES_URL."
+            )
 
     application = Application.builder().token(BOT_TOKEN).build()
 
