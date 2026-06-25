@@ -48,6 +48,12 @@ RULES_URL = os.environ.get("RULES_URL", "").strip()
 if RULES_URL.rstrip("/").endswith("Pravila-chata-01-01"):
     RULES_URL = ""
 
+# Принудительно создать новую страницу правил при старте (игнорируя RULES_URL).
+# Удобно, если в RULES_URL лежит битая ссылка: задайте FORCE_NEW_RULES=1.
+FORCE_NEW_RULES = os.environ.get("FORCE_NEW_RULES", "0").strip().lower() not in (
+    "0", "false", "no", "",
+)
+
 # Текст сообщения над кнопкой и подпись самой кнопки.
 COMMENT_TEXT = os.environ.get("COMMENT_TEXT", "👇 Правила нашего чата:")
 BUTTON_TEXT = os.environ.get("BUTTON_TEXT", "📜 Правила чата")
@@ -198,9 +204,12 @@ def main() -> None:
     if not BOT_TOKEN:
         raise SystemExit("Не задан BOT_TOKEN. Скопируйте .env.example в .env и заполните.")
 
-    # Если ссылка на правила не задана — создаём страницу в Telegraph автоматически.
-    if not RULES_URL:
-        logger.info("RULES_URL не задан — создаю страницу правил в Telegraph…")
+    # Создаём страницу в Telegraph, если ссылка не задана или запрошено принудительно.
+    if not RULES_URL or FORCE_NEW_RULES:
+        if FORCE_NEW_RULES:
+            logger.info("FORCE_NEW_RULES=1 — создаю новую страницу правил в Telegraph…")
+        else:
+            logger.info("RULES_URL не задан — создаю страницу правил в Telegraph…")
         try:
             from create_telegraph import publish_rules
 
