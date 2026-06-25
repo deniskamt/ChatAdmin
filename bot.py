@@ -15,7 +15,7 @@ import logging
 import os
 
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
@@ -28,11 +28,13 @@ logging.basicConfig(
 logger = logging.getLogger("rules-bot")
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+
+# Ссылка на правила в Telegraph (см. create_telegraph.py) — открывается по кнопке.
 RULES_URL = os.environ.get("RULES_URL", "").strip()
-COMMENT_TEXT = os.environ.get(
-    "COMMENT_TEXT",
-    '📜 Перед общением ознакомьтесь с <a href="{rules_url}">правилами чата</a>.',
-)
+
+# Текст сообщения над кнопкой и подпись самой кнопки.
+COMMENT_TEXT = os.environ.get("COMMENT_TEXT", "👇 Правила нашего чата:")
+BUTTON_TEXT = os.environ.get("BUTTON_TEXT", "📜 Правила чата")
 
 # Username бота (для справки и проверки при запуске), напр. "my_rules_bot".
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "").strip().lstrip("@")
@@ -71,13 +73,16 @@ async def post_rules_comment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not _is_target_channel(message.sender_chat):
         return
 
-    text = COMMENT_TEXT.format(rules_url=RULES_URL)
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(BUTTON_TEXT, url=RULES_URL)]]
+    )
 
     try:
         await message.reply_text(
-            text,
+            COMMENT_TEXT,
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
+            reply_markup=keyboard,
         )
         logger.info(
             "Оставлен комментарий с правилами под постом %s в чате %s",
@@ -92,7 +97,10 @@ def main() -> None:
     if not BOT_TOKEN:
         raise SystemExit("Не задан BOT_TOKEN. Скопируйте .env.example в .env и заполните.")
     if not RULES_URL:
-        logger.warning("RULES_URL пуст — комментарий будет со ссылкой-заглушкой.")
+        raise SystemExit(
+            "Не задан RULES_URL. Создайте страницу правил: python create_telegraph.py "
+            "и вставьте полученную ссылку в RULES_URL."
+        )
 
     application = Application.builder().token(BOT_TOKEN).build()
 
