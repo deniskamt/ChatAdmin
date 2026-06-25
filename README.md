@@ -40,6 +40,30 @@ python bot.py
 | `COMMENT_TEXT` | Текст комментария, HTML. `{rules_url}` подставляется автоматически.         |
 | `CHANNEL_ID`   | (Необязательно) ограничить бота одним каналом по числовому id.              |
 
+## Деплой на Railway
+
+Бот работает на long-polling, поэтому открытый порт ему не нужен — это
+обычный фоновый процесс (`worker`).
+
+1. Создайте новый проект на [railway.app](https://railway.app) →
+   **Deploy from GitHub repo** и выберите этот репозиторий (ветку с ботом).
+2. Railway сам определит Python по `requirements.txt` и запустит
+   `python bot.py` (команда задана в `railway.json` и `Procfile`).
+3. Откройте сервис → вкладка **Variables** и добавьте переменные:
+   - `BOT_TOKEN` — токен от @BotFather
+   - `RULES_URL` — ссылка на правила
+   - `COMMENT_TEXT` — (опц.) свой текст комментария
+   - `CHANNEL_ID` — (опц.) ограничение по каналу
+
+   Переменные из дашборда Railway подхватываются автоматически — файл `.env`
+   на сервере не нужен.
+4. Деплой запустится сам. Логи смотрите во вкладке **Deployments → Logs**;
+   при ошибке процесс перезапустится (`restartPolicyType: ALWAYS`).
+
+> Важно: запускайте **только один экземпляр** бота. Если параллельно работает
+> локальная копия и копия на Railway, Telegram будет отдавать обновления с
+> ошибкой `Conflict: terminated by other getUpdates request`.
+
 ## Запуск как сервис (опционально)
 
 Пример systemd-юнита `/etc/systemd/system/chatadmin-bot.service`:
