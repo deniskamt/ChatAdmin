@@ -39,10 +39,23 @@ BUTTON_TEXT = os.environ.get("BUTTON_TEXT", "📜 Правила чата")
 # Username бота (для справки и проверки при запуске), напр. "my_rules_bot".
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "").strip().lstrip("@")
 
+def _normalize_username(raw: str) -> str:
+    """Приводит '@name', 'https://t.me/name', 't.me/name' к 'name' (в нижнем регистре)."""
+    value = raw.strip()
+    for prefix in ("https://", "http://", "t.me/", "telegram.me/"):
+        if value.lower().startswith(prefix):
+            value = value[len(prefix):]
+    # на случай 'https://t.me/name' — после срезания протокола остаётся 't.me/name'
+    for prefix in ("t.me/", "telegram.me/"):
+        if value.lower().startswith(prefix):
+            value = value[len(prefix):]
+    return value.lstrip("@").strip("/").lower()
+
+
 # Необязательное ограничение на один канал — по числовому id и/или @username.
 _channel_id_raw = os.environ.get("CHANNEL_ID", "").strip()
 CHANNEL_ID = int(_channel_id_raw) if _channel_id_raw else None
-CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME", "").strip().lstrip("@").lower()
+CHANNEL_USERNAME = _normalize_username(os.environ.get("CHANNEL_USERNAME", ""))
 
 
 def _is_target_channel(origin_chat) -> bool:
@@ -69,8 +82,22 @@ async def post_rules_comment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not message.is_automatic_forward:
         return
 
+    origin = message.sender_chat
+    logger.info(
+        "Получен пост канала: id=%s username=%s title=%s (группа обсуждения %s)",
+        getattr(origin, "id", None),
+        getattr(origin, "username", None),
+        getattr(origin, "title", None),
+        message.chat_id,
+    )
+
     # При необходимости фильтруем по конкретному каналу-источнику.
-    if not _is_target_channel(message.sender_chat):
+    if not _is_target_channel(origin):
+        logger.info(
+            "Пост отфильтрован: не совпал с CHANNEL_ID=%s / CHANNEL_USERNAME=%s",
+            CHANNEL_ID,
+            CHANNEL_USERNAME or None,
+        )
         return
 
     keyboard = InlineKeyboardMarkup(
