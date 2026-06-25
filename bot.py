@@ -184,7 +184,8 @@ def main() -> None:
 
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Сверяем фактический username бота с заданным в настройках.
+    # Сверяем фактический username бота с заданным в настройках и проверяем,
+    # привязана ли к каналу группа обсуждения и состоит ли в ней бот.
     async def _check_identity(app: Application) -> None:
         me = await app.bot.get_me()
         logger.info("Бот @%s (id=%s) авторизован.", me.username, me.id)
@@ -194,6 +195,39 @@ def main() -> None:
                 BOT_USERNAME,
                 me.username,
             )
+
+        if CHANNEL_ID is None:
+            logger.info(
+                "CHANNEL_ID не задан — пропускаю проверку группы обсуждения."
+            )
+            return
+
+        try:
+            chat = await app.bot.get_chat(CHANNEL_ID)
+            logger.info(
+                "Проверка CHANNEL_ID=%s → type=%s title=%r linked_chat_id=%s",
+                CHANNEL_ID, chat.type, chat.title, chat.linked_chat_id,
+            )
+            group_id = chat.linked_chat_id
+            if group_id is None:
+                logger.warning(
+                    "❗ У этого чата НЕТ привязанной группы обсуждения. "
+                    "Либо CHANNEL_ID указывает не на канал, либо у канала "
+                    "не включены комментарии — оставлять комментарии негде."
+                )
+                return
+            member = await app.bot.get_chat_member(group_id, me.id)
+            logger.info(
+                "✅ Статус бота в группе обсуждения %s: %s",
+                group_id, member.status,
+            )
+            if member.status in ("left", "kicked"):
+                logger.warning(
+                    "❗ Бот НЕ состоит в группе обсуждения %s — добавьте его туда.",
+                    group_id,
+                )
+        except Exception as exc:  # noqa: BLE001 — диагностика, не должна ронять бота
+            logger.warning("Не удалось проверить группу обсуждения: %s", exc)
 
     application.post_init = _check_identity
 
