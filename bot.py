@@ -21,6 +21,7 @@ from telegram.constants import ParseMode
 from telegram.error import Conflict
 from telegram.ext import (
     Application,
+    ChatMemberHandler,
     ContextTypes,
     MessageHandler,
     TypeHandler,
@@ -112,6 +113,21 @@ async def debug_log_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
 
 
+async def log_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Логирует изменение статуса самого бота в чатах (приходит даже при Privacy Mode)."""
+    upd = update.my_chat_member
+    if upd is None:
+        return
+    chat = upd.chat
+    logger.info(
+        "MY_CHAT_MEMBER | чат=%r (%s, id=%s) | новый статус бота: %s",
+        chat.title,
+        chat.type,
+        chat.id,
+        upd.new_chat_member.status,
+    )
+
+
 async def post_rules_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Отвечает ссылкой на правила под каждым новым постом канала."""
     message = update.effective_message
@@ -196,17 +212,21 @@ def main() -> None:
                 me.username,
             )
 
-        if CHANNEL_ID is None:
-            logger.info(
-                "CHANNEL_ID не задан — пропускаю проверку группы обсуждения."
-            )
+        # Публичный канал ищем по @username (членство не требуется),
+        # иначе пробуем числовой id.
+        if CHANNEL_USERNAME:
+            target = "@" + CHANNEL_USERNAME
+        elif CHANNEL_ID is not None:
+            target = CHANNEL_ID
+        else:
+            logger.info("Канал не задан — пропускаю проверку группы обсуждения.")
             return
 
         try:
-            chat = await app.bot.get_chat(CHANNEL_ID)
+            chat = await app.bot.get_chat(target)
             logger.info(
-                "Проверка CHANNEL_ID=%s → type=%s title=%r linked_chat_id=%s",
-                CHANNEL_ID, chat.type, chat.title, chat.linked_chat_id,
+                "Проверка канала %s → id=%s type=%s title=%r linked_chat_id=%s",
+                target, chat.id, chat.type, chat.title, chat.linked_chat_id,
             )
             group_id = chat.linked_chat_id
             if group_id is None:
@@ -243,6 +263,11 @@ def main() -> None:
     if DEBUG:
         application.add_handler(TypeHandler(Update, debug_log_update), group=-1)
         logger.info("DEBUG включён: логирую все входящие обновления.")
+
+    # Логируем, когда бота добавляют/меняют ему права в чатах.
+    application.add_handler(
+        ChatMemberHandler(log_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER)
+    )
 
     # Ловим автопересылки постов в привязанной группе обсуждения.
     application.add_handler(
