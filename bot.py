@@ -342,6 +342,12 @@ def main() -> None:
     application.add_handler(
         MessageHandler(filters.IS_AUTOMATIC_FORWARD, post_rules_comment)
     )
+
+    # Подключаем интерактивное меню аукциона (ставки, заявки, лоты).
+    import auction
+
+    auction.register(application, rules_url=RULES_URL)
+
     application.add_error_handler(on_error)
 
     logger.info("Бот запущен. Ожидаю новые посты канала…")
