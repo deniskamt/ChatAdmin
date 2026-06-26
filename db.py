@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS lots (
     description TEXT NOT NULL DEFAULT '',
     start_price BIGINT NOT NULL DEFAULT 0,
     active      INTEGER NOT NULL DEFAULT 1,
+    ends_at     TEXT,
+    created_by  BIGINT NOT NULL DEFAULT 0,
     created_at  TIMESTAMP NOT NULL DEFAULT NOW()
 );
 CREATE TABLE IF NOT EXISTS bids (
@@ -77,6 +79,8 @@ CREATE TABLE IF NOT EXISTS lots (
     description TEXT NOT NULL DEFAULT '',
     start_price INTEGER NOT NULL DEFAULT 0,
     active      INTEGER NOT NULL DEFAULT 1,
+    ends_at     TEXT,
+    created_by  INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS bids (
@@ -98,16 +102,18 @@ def init_db() -> None:
             cur.execute(_SCHEMA_PG)
         else:
             conn.executescript(_SCHEMA_SQLITE)
-        # Мягкая миграция: добавить start_price в уже существующие таблицы.
-        try:
-            cur.execute(
-                "ALTER TABLE lots ADD COLUMN start_price "
-                + ("BIGINT" if USE_PG else "INTEGER")
-                + " NOT NULL DEFAULT 0"
-            )
-            conn.commit()
-        except Exception:  # noqa: BLE001 — колонка уже есть
-            conn.rollback()
+        # Мягкие миграции для уже существующих таблиц.
+        int_type = "BIGINT" if USE_PG else "INTEGER"
+        for ddl in (
+            f"ALTER TABLE lots ADD COLUMN start_price {int_type} NOT NULL DEFAULT 0",
+            "ALTER TABLE lots ADD COLUMN ends_at TEXT",
+            f"ALTER TABLE lots ADD COLUMN created_by {int_type} NOT NULL DEFAULT 0",
+        ):
+            try:
+                cur.execute(ddl)
+                conn.commit()
+            except Exception:  # noqa: BLE001 — колонка уже есть
+                conn.rollback()
 
 
 def _insert_returning_id(conn, sql: str, params) -> int:
@@ -121,12 +127,14 @@ def _insert_returning_id(conn, sql: str, params) -> int:
 
 # ---------- Лоты ----------
 
-def add_lot(title: str, description: str, start_price: int = 0) -> int:
+def add_lot(title: str, description: str, start_price: int = 0,
+            ends_at: str | None = None, created_by: int = 0) -> int:
     with _conn() as conn:
         return _insert_returning_id(
             conn,
-            "INSERT INTO lots (title, description, start_price) VALUES (?, ?, ?)",
-            (title, description, start_price),
+            "INSERT INTO lots (title, description, start_price, ends_at, created_by) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (title, description, start_price, ends_at, created_by),
         )
 
 
@@ -135,6 +143,46 @@ def deactivate_lot(lot_id: int) -> bool:
         cur = _cursor(conn)
         cur.execute(_q("UPDATE lots SET active = 0 WHERE id = ?"), (lot_id,))
         return cur.rowcount > 0
+
+
+def reactivate_lot(lot_id: int, ends_at: str | None = None) -> bool:
+    with _conn() as conn:
+        cur = _cursor(conn)
+        if ends_at is not None:
+            cur.execute(
+                _q("UPDATE lots SET active = 1, ends_at = ? WHERE id = ?"),
+                (ends_at, lot_id),
+            )
+        else:
+            cur.execute(_q("UPDATE lots SET active = 1 WHERE id = ?"), (lot_id,))
+        return cur.rowcount > 0
+
+
+_EDITABLE_FIELDS = {"title", "description", "start_price", "ends_at"}
+
+
+def update_lot_field(lot_id: int, field: str, value) -> bool:
+    if field not in _EDITABLE_FIELDS:
+        raise ValueError(f"Поле {field} нельзя редактировать")
+    with _conn() as conn:
+        cur = _cursor(conn)
+        cur.execute(_q(f"UPDATE lots SET {field} = ? WHERE id = ?"), (value, lot_id))
+        return cur.rowcount > 0
+
+
+def close_expired_lots(now_iso: str):
+    """Снимает активные лоты, у которых истёк срок. Возвращает снятые строки."""
+    with _conn() as conn:
+        cur = _cursor(conn)
+        cur.execute(
+            _q("SELECT * FROM lots WHERE active = 1 AND ends_at IS NOT NULL "
+               "AND ends_at < ?"),
+            (now_iso,),
+        )
+        rows = cur.fetchall()
+        for r in rows:
+            cur.execute(_q("UPDATE lots SET active = 0 WHERE id = ?"), (r["id"],))
+        return rows
 
 
 def get_lot(lot_id: int):

@@ -13,6 +13,7 @@
 
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -32,6 +33,10 @@ logger = logging.getLogger("rules-bot.auction")
 PAGE_SIZE = 10
 QUICK_STEPS = (100, 500, 1000)  # быстрые прибавки к ставке
 SEP = "➖➖➖➖➖➖➖➖➖➖➖"
+
+MIN_DAYS = 3       # минимальный срок аукциона
+MAX_DAYS = 30      # максимальный срок (≈ месяц)
+DEFAULT_DAYS = 7   # срок по умолчанию
 
 ADMIN_IDS = {
     int(x) for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split(",") if x
@@ -66,6 +71,50 @@ def _min_next_bid(lot) -> int:
     if top is not None:
         return top + 1
     return lot["start_price"] or 1
+
+
+# ---------- Время ----------
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _end_in_days(days: int) -> str:
+    return (_now() + timedelta(days=days)).isoformat()
+
+
+def _parse_dt(value):
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _remaining_text(ends_at) -> str:
+    dt = _parse_dt(ends_at)
+    if dt is None:
+        return "бессрочно"
+    delta = dt - _now()
+    secs = int(delta.total_seconds())
+    if secs <= 0:
+        return "истёк"
+    days, rem = divmod(secs, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days} дн. {hours} ч."
+    if hours:
+        return f"{hours} ч. {minutes} мин."
+    return f"{minutes} мин."
+
+
+def _clamp_days(days: int) -> int:
+    return max(MIN_DAYS, min(MAX_DAYS, days))
 
 
 # ---------- Клавиатуры ----------
@@ -163,6 +212,8 @@ def render_lot_card(lot_id: int):
         lines.append("")
     if lot["start_price"]:
         lines.append(f"🔢 Старт: <b>{fmt_money(lot['start_price'])}</b>")
+    if lot["ends_at"]:
+        lines.append(f"⏳ До конца: <b>{_remaining_text(lot['ends_at'])}</b>")
 
     if bids:
         leader = bids[0]
@@ -344,20 +395,91 @@ async def _show_admin_lots(query) -> None:
         return
     rows = []
     for lot in lots[:20]:
-        mark = "🟢" if lot["active"] else "⚪️"
-        label = f"{mark} #{lot['id']} {lot['title']}"
         if lot["active"]:
             rows.append([
-                InlineKeyboardButton(label, callback_data=f"lot:{lot['id']}"),
+                InlineKeyboardButton(f"✏️ #{lot['id']} {lot['title']}",
+                                     callback_data=f"adm_edit:{lot['id']}"),
                 InlineKeyboardButton("🗑", callback_data=f"adm_del:{lot['id']}"),
             ])
         else:
-            rows.append([InlineKeyboardButton(label, callback_data="noop")])
+            rows.append([
+                InlineKeyboardButton(f"⚪️ #{lot['id']} {lot['title']}",
+                                     callback_data=f"adm_edit:{lot['id']}"),
+                InlineKeyboardButton("♻️", callback_data=f"adm_restore:{lot['id']}"),
+            ])
     rows.append([InlineKeyboardButton("◀️ Назад", callback_data="admin")])
     await query.edit_message_text(
-        "📋 <b>Управление лотами</b>\n🗑 — снять лот с аукциона.",
+        "📋 <b>Управление лотами</b>\n"
+        "✏️ — редактировать · 🗑 — снять · ♻️ — вернуть.",
         parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows),
     )
+
+
+async def _show_lot_edit(query, lot_id: int) -> None:
+    if not is_admin(query.from_user.id):
+        return
+    lot = db.get_lot(lot_id)
+    if lot is None:
+        await query.edit_message_text("Лот не найден.", reply_markup=back_to_menu_kb())
+        return
+    status = "🟢 активен" if lot["active"] else "⚪️ снят"
+    srok = _remaining_text(lot["ends_at"]) if lot["ends_at"] else "бессрочно"
+    text = (
+        f"✏️ <b>Редактирование лота #{lot['id']}</b>\n" + SEP + "\n"
+        f"🏷 Название: {lot['title']}\n"
+        f"📝 Описание: {lot['description'] or '—'}\n"
+        f"🔢 Старт: {fmt_money(lot['start_price'])}\n"
+        f"⏳ Срок: {srok}\n"
+        f"Статус: {status}"
+    )
+    toggle = (
+        InlineKeyboardButton("🗑 Снять", callback_data=f"adm_del:{lot_id}")
+        if lot["active"]
+        else InlineKeyboardButton("♻️ Вернуть", callback_data=f"adm_restore:{lot_id}")
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏷 Название", callback_data=f"ledit:{lot_id}:title"),
+         InlineKeyboardButton("📝 Описание", callback_data=f"ledit:{lot_id}:description")],
+        [InlineKeyboardButton("🔢 Старт", callback_data=f"ledit:{lot_id}:start_price"),
+         InlineKeyboardButton("⏳ Срок (дни)", callback_data=f"ledit:{lot_id}:ends_at")],
+        [toggle],
+        [InlineKeyboardButton("◀️ К списку", callback_data="adm_lots")],
+    ])
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+
+# ---------- Автозакрытие по сроку ----------
+
+async def _close_expired(bot) -> None:
+    try:
+        closed = db.close_expired_lots(_now().isoformat())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Ошибка автозакрытия лотов: %s", exc)
+        return
+    for lot in closed:
+        await _announce_winner(bot, lot)
+
+
+async def _announce_winner(bot, lot) -> None:
+    bids = db.get_bids(lot["id"])
+    if bids:
+        w = bids[0]
+        who = "Аноним" if w["anonymous"] else (w["username"] or "Участник")
+        text = (
+            f"🏁 <b>Лот #{lot['id']} «{lot['title']}» закрыт!</b>\n"
+            f"🏆 Победитель: {who} — <b>{fmt_money(w['amount'])}</b>"
+        )
+    else:
+        text = f"🏁 <b>Лот #{lot['id']} «{lot['title']}» закрыт</b> без ставок."
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, text, parse_mode=ParseMode.HTML)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Не объявить победителя админу %s: %s", admin_id, exc)
+
+
+async def _expiry_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _close_expired(context.bot)
 
 
 # ---------- Роутер callback-кнопок ----------
@@ -366,6 +488,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     query = update.callback_query
     data = query.data or ""
     await query.answer()
+
+    # Перед показом — снимаем лоты с истёкшим сроком.
+    await _close_expired(context.bot)
 
     if data == "noop":
         return
@@ -400,11 +525,40 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if data == "adm_lots":
         await _show_admin_lots(query)
         return
+    if data.startswith("adm_edit:"):
+        await _show_lot_edit(query, int(data.split(":")[1]))
+        return
     if data.startswith("adm_del:"):
         if not is_admin(query.from_user.id):
             return
         db.deactivate_lot(int(data.split(":")[1]))
         await _show_admin_lots(query)
+        return
+    if data.startswith("adm_restore:"):
+        if not is_admin(query.from_user.id):
+            return
+        lot_id = int(data.split(":")[1])
+        lot = db.get_lot(lot_id)
+        # Если срок истёк (или его нет) — продлеваем на срок по умолчанию.
+        dt = _parse_dt(lot["ends_at"]) if lot else None
+        new_end = None if (dt and dt > _now()) else _end_in_days(DEFAULT_DAYS)
+        db.reactivate_lot(lot_id, ends_at=new_end)
+        await _show_admin_lots(query)
+        return
+    if data.startswith("ledit:"):
+        if not is_admin(query.from_user.id):
+            return
+        _, lot_id_s, field = data.split(":")
+        context.user_data["await"] = {
+            "action": "edit_value", "lot_id": int(lot_id_s), "field": field,
+        }
+        prompts = {
+            "title": "Введите новое название:",
+            "description": "Введите новое описание:",
+            "start_price": "Введите новую стартовую цену (число):",
+            "ends_at": f"На сколько дней продлить? ({MIN_DAYS}–{MAX_DAYS}):",
+        }
+        await query.message.reply_text(prompts.get(field, "Введите значение:"))
         return
     if data.startswith("lots:"):
         await _show_lots(query, int(data.split(":")[1]))
@@ -543,13 +697,64 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if action == "addlot_price":
         price = _parse_amount(text) or 0
-        lot_id = db.add_lot(state["title"], state["desc"], price)
+        context.user_data["await"] = {
+            "action": "addlot_days", "title": state["title"],
+            "desc": state["desc"], "price": price,
+        }
+        await update.message.reply_text(
+            f"На сколько <b>дней</b> запустить аукцион? "
+            f"(от {MIN_DAYS} до {MAX_DAYS}, по умолчанию {DEFAULT_DAYS}):",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if action == "addlot_days":
+        days = _parse_amount(text)
+        days = _clamp_days(days) if days else DEFAULT_DAYS
+        lot_id = db.add_lot(
+            state["title"], state["desc"], state["price"],
+            ends_at=_end_in_days(days), created_by=user.id,
+        )
         context.user_data.pop("await", None)
         await update.message.reply_text(
-            f"✅ Лот #{lot_id} «{state['title']}» добавлен (старт {fmt_money(price)}).",
+            f"✅ Лот #{lot_id} «{state['title']}» добавлен.\n"
+            f"Старт: {fmt_money(state['price'])} · срок: {days} дн.",
             reply_markup=main_menu_keyboard(user.id),
         )
         return
+
+    if action == "edit_value":
+        await _apply_lot_edit(update, context, state, text)
+        return
+
+
+async def _apply_lot_edit(update, context, state, text: str) -> None:
+    lot_id, field = state["lot_id"], state["field"]
+    if field == "start_price":
+        value = _parse_amount(text)
+        if value is None:
+            await update.message.reply_text("Введите число, например: 1000")
+            return
+    elif field == "ends_at":
+        days = _parse_amount(text)
+        if days is None:
+            await update.message.reply_text("Введите число дней, например: 7")
+            return
+        value = _end_in_days(_clamp_days(days))
+    else:  # title / description
+        value = text
+
+    db.update_lot_field(lot_id, field, value)
+    context.user_data.pop("await", None)
+    names = {"title": "Название", "description": "Описание",
+             "start_price": "Стартовая цена", "ends_at": "Срок"}
+    await update.message.reply_text(
+        f"✅ {names.get(field, field)} лота #{lot_id} обновлено.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✏️ К лоту", callback_data=f"adm_edit:{lot_id}")],
+            [InlineKeyboardButton("🏠 Меню", callback_data="home")],
+        ]),
+    )
 
 
 async def _send_request_to_admins(update, context, text: str) -> None:
@@ -608,6 +813,17 @@ def register(application: Application, rules_url: str = "") -> None:
             filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, on_text
         )
     )
+
+    # Периодически закрываем лоты с истёкшим сроком и объявляем победителей.
+    if application.job_queue is not None:
+        application.job_queue.run_repeating(_expiry_job, interval=300, first=15)
+        logger.info("Автозакрытие лотов по сроку включено (каждые 5 мин).")
+    else:
+        logger.warning(
+            "JobQueue недоступен — лоты будут закрываться лениво, при заходе в меню. "
+            "Для фонового закрытия установите python-telegram-bot[job-queue]."
+        )
+
     logger.info(
         "Аукцион-меню подключено. Админы: %s",
         ", ".join(map(str, ADMIN_IDS)) or "не заданы (ADMIN_IDS пуст)",
