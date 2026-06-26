@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS lots (
     id          SERIAL PRIMARY KEY,
     title       TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
+    start_price BIGINT NOT NULL DEFAULT 0,
     active      INTEGER NOT NULL DEFAULT 1,
     created_at  TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -74,6 +75,7 @@ CREATE TABLE IF NOT EXISTS lots (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     title       TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
+    start_price INTEGER NOT NULL DEFAULT 0,
     active      INTEGER NOT NULL DEFAULT 1,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -96,6 +98,16 @@ def init_db() -> None:
             cur.execute(_SCHEMA_PG)
         else:
             conn.executescript(_SCHEMA_SQLITE)
+        # Мягкая миграция: добавить start_price в уже существующие таблицы.
+        try:
+            cur.execute(
+                "ALTER TABLE lots ADD COLUMN start_price "
+                + ("BIGINT" if USE_PG else "INTEGER")
+                + " NOT NULL DEFAULT 0"
+            )
+            conn.commit()
+        except Exception:  # noqa: BLE001 — колонка уже есть
+            conn.rollback()
 
 
 def _insert_returning_id(conn, sql: str, params) -> int:
@@ -109,11 +121,12 @@ def _insert_returning_id(conn, sql: str, params) -> int:
 
 # ---------- Лоты ----------
 
-def add_lot(title: str, description: str) -> int:
+def add_lot(title: str, description: str, start_price: int = 0) -> int:
     with _conn() as conn:
         return _insert_returning_id(
-            conn, "INSERT INTO lots (title, description) VALUES (?, ?)",
-            (title, description),
+            conn,
+            "INSERT INTO lots (title, description, start_price) VALUES (?, ?, ?)",
+            (title, description, start_price),
         )
 
 
@@ -184,3 +197,40 @@ def get_max_bid(lot_id: int):
         cur.execute(_q("SELECT MAX(amount) AS m FROM bids WHERE lot_id = ?"), (lot_id,))
         row = cur.fetchone()
         return row["m"] if row and row["m"] is not None else None
+
+
+def count_bids(lot_id: int) -> int:
+    with _conn() as conn:
+        cur = _cursor(conn)
+        cur.execute(_q("SELECT COUNT(*) AS n FROM bids WHERE lot_id = ?"), (lot_id,))
+        return cur.fetchone()["n"]
+
+
+def get_user_bid_lots(user_id: int):
+    """Лоты, где пользователь делал ставку, с его максимальной ставкой."""
+    with _conn() as conn:
+        cur = _cursor(conn)
+        cur.execute(
+            _q(
+                "SELECT l.id AS lot_id, l.title AS title, l.active AS active, "
+                "       MAX(b.amount) AS my_max "
+                "FROM bids b JOIN lots l ON l.id = b.lot_id "
+                "WHERE b.user_id = ? "
+                "GROUP BY l.id, l.title, l.active "
+                "ORDER BY l.id DESC"
+            ),
+            (user_id,),
+        )
+        return cur.fetchall()
+
+
+def stats() -> dict:
+    with _conn() as conn:
+        cur = _cursor(conn)
+        cur.execute("SELECT COUNT(*) AS n FROM lots WHERE active = 1")
+        active = cur.fetchone()["n"]
+        cur.execute("SELECT COUNT(*) AS n FROM lots")
+        total = cur.fetchone()["n"]
+        cur.execute("SELECT COUNT(*) AS n FROM bids")
+        bids = cur.fetchone()["n"]
+        return {"active_lots": active, "total_lots": total, "bids": bids}
