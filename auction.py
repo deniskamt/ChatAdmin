@@ -39,9 +39,6 @@ ADMIN_IDS = {
     int(x) for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split(",") if x
 }
 
-# Показывать ставки анонимно (1) или с @username (0).
-ANON_BIDS = os.environ.get("ANON_BIDS", "0").strip().lower() not in ("0", "false", "no", "")
-
 # Ссылка на правила (проставляется из bot.py при регистрации).
 RULES_URL = ""
 
@@ -238,6 +235,39 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    if data.startswith("bidsave:"):
+        state = context.user_data.get("await")
+        if not state or state.get("action") != "bid_confirm":
+            await query.answer("Сессия истекла — начните ставку заново.", show_alert=True)
+            return
+        anonymous = data.split(":")[1] == "anon"
+        lot_id = state["lot_id"]
+        amount = state["amount"]
+        lot = db.get_lot(lot_id)
+        if lot is None or not lot["active"]:
+            context.user_data.pop("await", None)
+            await query.edit_message_text("Лот уже недоступен.")
+            return
+        top = db.get_max_bid(lot_id)
+        if top is not None and amount <= top:
+            context.user_data.pop("await", None)
+            await query.edit_message_text(
+                f"Кто-то уже поставил больше ({top}). Сделайте ставку заново.",
+                reply_markup=lot_card_keyboard(lot_id),
+            )
+            return
+        db.add_bid(lot_id, query.from_user.id, _display_name(query.from_user),
+                   amount, anonymous)
+        context.user_data.pop("await", None)
+        card_text, keyboard = render_lot_card(lot_id)
+        how = "анонимно" if anonymous else "с именем"
+        await query.edit_message_text(
+            f"✅ Ставка {amount} принята ({how})!\n\n{card_text}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+        )
+        return
+
 
 # ---------- Текстовый ввод (ставка / заявка / добавление лота) ----------
 
@@ -268,13 +298,20 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"Ставка должна быть больше текущей ({top}). Попробуйте снова:"
             )
             return
-        db.add_bid(lot_id, user.id, _display_name(user), amount, ANON_BIDS)
-        context.user_data.pop("await", None)
-        card_text, keyboard = render_lot_card(lot_id)
+        # Сумма принята — спрашиваем, как показать ставку.
+        context.user_data["await"] = {
+            "action": "bid_confirm", "lot_id": lot_id, "amount": amount,
+        }
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                f"👤 С именем ({_display_name(user)})", callback_data="bidsave:pub"
+            )],
+            [InlineKeyboardButton("🕵️ Анонимно", callback_data="bidsave:anon")],
+        ])
         await update.message.reply_text(
-            f"✅ Ставка {amount} принята!\n\n{card_text}",
+            f"Ваша ставка: <b>{amount}</b> на лот #{lot_id}.\nКак показать её в списке?",
             parse_mode=ParseMode.HTML,
-            reply_markup=keyboard,
+            reply_markup=kb,
         )
         return
 
