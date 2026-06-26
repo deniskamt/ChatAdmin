@@ -11,6 +11,7 @@
     отвечает на него. Ответ становится первым комментарием под постом.
 """
 
+import json
 import logging
 import os
 import sys
@@ -137,6 +138,30 @@ async def log_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
+# --- Защита от повторного комментирования одного и того же поста ---
+_HANDLED_FILE = os.environ.get("HANDLED_FILE", "handled_posts.json")
+_handled_posts: set[str] = set()
+
+
+def _load_handled() -> None:
+    try:
+        with open(_HANDLED_FILE, encoding="utf-8") as fh:
+            _handled_posts.update(json.load(fh))
+    except FileNotFoundError:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Не удалось прочитать %s: %s", _HANDLED_FILE, exc)
+
+
+def _mark_handled(key: str) -> None:
+    _handled_posts.add(key)
+    try:
+        with open(_HANDLED_FILE, "w", encoding="utf-8") as fh:
+            json.dump(sorted(_handled_posts), fh)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Не удалось записать %s: %s", _HANDLED_FILE, exc)
+
+
 async def post_rules_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Отвечает ссылкой на правила под каждым новым постом канала."""
     message = update.effective_message
@@ -146,6 +171,12 @@ async def post_rules_comment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Реагируем только на автоматические пересылки поста из канала в группу
     # обсуждения — именно они открывают ветку комментариев.
     if not message.is_automatic_forward:
+        return
+
+    # Ключ поста: id канала + id исходного поста в канале (стабилен между рестартами).
+    post_key = f"{getattr(message.sender_chat, 'id', '?')}:{message.forward_from_message_id}"
+    if post_key in _handled_posts:
+        logger.info("Пост %s уже прокомментирован — пропускаю дубль.", post_key)
         return
 
     origin = message.sender_chat
@@ -177,6 +208,7 @@ async def post_rules_comment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             disable_web_page_preview=True,
             reply_markup=keyboard,
         )
+        _mark_handled(post_key)
         logger.info(
             "Оставлен комментарий с правилами под постом %s в чате %s",
             message.message_id,
@@ -225,6 +257,8 @@ def main() -> None:
                 f"Не удалось создать страницу правил в Telegraph: {exc}. "
                 "Создайте её вручную (python create_telegraph.py) и задайте RULES_URL."
             )
+
+    _load_handled()
 
     application = Application.builder().token(BOT_TOKEN).build()
 
